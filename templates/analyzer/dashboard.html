@@ -1,0 +1,367 @@
+{% extends "analyzer/base.html" %}
+{% block title %}QC Entry · Milk Analyzer Automation{% endblock %}
+
+{% block content %}
+<section class="hero">
+    <div>
+        <span class="eyebrow">REAL-WORLD QUALITY AUTOMATION</span>
+        <h1>Milk Quality Analyzer Entry</h1>
+        <p>Capture FAT and SNF automatically from the analyzer, calculate CLR, validate the sample and save a QC batch.</p>
+    </div>
+    <span class="mode">{{ mode|upper }} MODE</span>
+</section>
+
+<form method="post" id="qcForm">
+{% csrf_token %}
+<section class="card">
+    <h2>Collection Details</h2>
+    <div class="grid two">
+        <label>
+            <span>Date</span>
+            <input type="date" name="date" id="dateInput" value="{{ today }}" required>
+        </label>
+        <label>
+            <span>Shift</span>
+            <select name="shift" id="shiftInput">
+                <option value="AM" {% if current_shift == "AM" %}selected{% endif %}>AM</option>
+                <option value="PM" {% if current_shift == "PM" %}selected{% endif %}>PM</option>
+            </select>
+        </label>
+    </div>
+</section>
+
+<section class="card">
+    <div class="split">
+        <div>
+            <span class="eyebrow">ANALYZER CONNECTION</span>
+            <h2>Live Quality Reading</h2>
+        </div>
+        <div class="buttons">
+            <button type="button" class="button primary" id="connectBtn">Connect Analyzer</button>
+            <button type="button" class="button danger" id="stopBtn" disabled>Stop</button>
+        </div>
+    </div>
+
+    <div class="metrics">
+        <div class="metric"><span>Status</span><strong id="status">Ready</strong></div>
+        <div class="metric"><span>FAT</span><strong id="liveFat">0.00</strong></div>
+        <div class="metric"><span>SNF</span><strong id="liveSnf">0.00</strong></div>
+        <div class="metric"><span>CLR</span><strong id="liveClr">0.00</strong></div>
+    </div>
+
+    <p class="note">In real mode the backend reads the serial analyzer at the configured COM port and 1200 baud. CLR is calculated from FAT and SNF using the dairy formula shown in the README.</p>
+</section>
+
+<section class="card">
+    <h2>Current Sample</h2>
+    <div class="grid four">
+        <label>
+            <span>Sample No.</span>
+            <input type="number" id="sampleInput" min="1" placeholder="e.g. 101">
+        </label>
+        <label>
+            <span>FAT</span>
+            <input type="number" id="fatInput" step="0.01" readonly class="readonly">
+        </label>
+        <label>
+            <span>SNF</span>
+            <input type="number" id="snfInput" step="0.01" readonly class="readonly">
+        </label>
+        <label>
+            <span>CLR</span>
+            <input type="number" id="clrInput" step="0.01" readonly class="readonly">
+        </label>
+    </div>
+    <div id="sampleError" class="error-text"></div>
+    <div class="buttons end">
+        <button type="button" class="button secondary" id="addBtn">Add to Batch</button>
+    </div>
+</section>
+
+<section class="card">
+    <div class="split">
+        <div>
+            <h2>QC Batch</h2>
+            <p class="muted">Review analyzer values before saving.</p>
+        </div>
+        <span class="count"><span id="rowCount">0</span> rows</span>
+    </div>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr><th>S.No</th><th>Sample</th><th>FAT</th><th>SNF</th><th>CLR</th><th></th></tr>
+            </thead>
+            <tbody id="batchBody">
+                <tr id="emptyRow"><td colspan="6" class="empty">No samples added yet.</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="buttons end">
+        <button type="submit" class="button primary">Save QC Batch</button>
+    </div>
+</section>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+    const connectBtn = document.getElementById("connectBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const status = document.getElementById("status");
+    const liveFat = document.getElementById("liveFat");
+    const liveSnf = document.getElementById("liveSnf");
+    const liveClr = document.getElementById("liveClr");
+    const fatInput = document.getElementById("fatInput");
+    const snfInput = document.getElementById("snfInput");
+    const clrInput = document.getElementById("clrInput");
+    const sampleInput = document.getElementById("sampleInput");
+    const sampleError = document.getElementById("sampleError");
+    const batchBody = document.getElementById("batchBody");
+    const rowCount = document.getElementById("rowCount");
+    const dateInput = document.getElementById("dateInput");
+    const shiftInput = document.getElementById("shiftInput");
+
+    let pollTimer = null;
+    let connected = false;
+    let reading = false;
+    let autoRestart = true;
+    let rowNo = 1;
+
+    function csrf() {
+        return document.querySelector("[name=csrfmiddlewaretoken]").value;
+    }
+
+    function setStatus(text, kind="") {
+        status.textContent = text;
+        status.className = kind;
+    }
+
+    function setValues(fat, snf, clr) {
+        const f = Number(fat).toFixed(2);
+        const s = Number(snf).toFixed(2);
+        const c = Number(clr).toFixed(2);
+        liveFat.textContent = f;
+        liveSnf.textContent = s;
+        liveClr.textContent = c;
+        fatInput.value = f;
+        snfInput.value = s;
+        clrInput.value = c;
+    }
+
+    function clearValues() {
+        liveFat.textContent = "0.00";
+        liveSnf.textContent = "0.00";
+        liveClr.textContent = "0.00";
+        fatInput.value = "";
+        snfInput.value = "";
+        clrInput.value = "";
+    }
+
+    async function startReading() {
+        if (!connected || reading) return;
+        reading = true;
+        setStatus("Waiting for sample...", "warn");
+        connectBtn.disabled = true;
+        stopBtn.disabled = false;
+
+        const res = await fetch("/api/analyzer-start/", {
+            method: "POST",
+            headers: {"X-CSRFToken": csrf()}
+        });
+        const data = await res.json();
+
+        if (!data.ok) {
+            reading = false;
+            setStatus(data.message || "Could not start", "bad");
+            connectBtn.disabled = false;
+            return;
+        }
+
+        schedulePoll();
+    }
+
+    function schedulePoll() {
+        clearTimeout(pollTimer);
+        pollTimer = setTimeout(pollStatus, 800);
+    }
+
+    async function pollStatus() {
+        try {
+            const res = await fetch("/api/analyzer-status/");
+            const data = await res.json();
+
+            if (data.connected) connected = true;
+
+            if (data.status === "success") {
+                setStatus("Data received", "good");
+                setValues(data.fat, data.snf, data.clr);
+                reading = false;
+                connectBtn.disabled = false;
+                stopBtn.disabled = false;
+
+                if (autoRestart) {
+                    setTimeout(startReading, 1500);
+                }
+                return;
+            }
+
+            if (data.status === "waiting") {
+                setStatus("Waiting for sample...", "warn");
+                schedulePoll();
+                return;
+            }
+
+            if (data.status === "timeout") {
+                setStatus("No data received - retrying", "warn");
+                reading = false;
+                if (autoRestart && connected) setTimeout(startReading, 1500);
+                return;
+            }
+
+            if (data.status === "error") {
+                setStatus(data.last_error || "Analyzer error", "bad");
+                reading = false;
+                connected = false;
+                connectBtn.disabled = false;
+                stopBtn.disabled = true;
+                return;
+            }
+
+            schedulePoll();
+        } catch (e) {
+            setStatus("Status request failed", "bad");
+            reading = false;
+            connectBtn.disabled = false;
+        }
+    }
+
+    connectBtn.addEventListener("click", async () => {
+        setStatus("Connecting...");
+        connectBtn.disabled = true;
+
+        try {
+            const res = await fetch("/api/analyzer-connect/");
+            const data = await res.json();
+
+            if (data.ok) {
+                connected = true;
+                autoRestart = true;
+                setStatus("Connected - waiting for sample", "good");
+                stopBtn.disabled = false;
+                await startReading();
+            } else {
+                connected = false;
+                setStatus("Not connected", "bad");
+                connectBtn.disabled = false;
+            }
+        } catch (e) {
+            connected = false;
+            setStatus("Not connected", "bad");
+            connectBtn.disabled = false;
+        }
+    });
+
+    stopBtn.addEventListener("click", async () => {
+        autoRestart = false;
+        connected = false;
+        reading = false;
+        clearTimeout(pollTimer);
+
+        await fetch("/api/analyzer-stop/", {
+            method: "POST",
+            headers: {"X-CSRFToken": csrf()}
+        });
+
+        clearValues();
+        setStatus("Stopped");
+        connectBtn.disabled = false;
+        stopBtn.disabled = true;
+    });
+
+    document.getElementById("addBtn").addEventListener("click", async () => {
+        sampleError.textContent = "";
+        const sample = sampleInput.value.trim();
+        const fat = fatInput.value.trim();
+        const snf = snfInput.value.trim();
+        const clr = clrInput.value.trim();
+
+        if (!sample) {
+            sampleError.textContent = "Enter Sample No.";
+            return;
+        }
+
+        if (!fat || !snf || !clr) {
+            sampleError.textContent = "Analyzer data not received yet.";
+            return;
+        }
+
+        let duplicateInBatch = false;
+        batchBody.querySelectorAll("tr[data-sample]").forEach(row => {
+            if (row.dataset.sample === sample) duplicateInBatch = true;
+        });
+        if (duplicateInBatch) {
+            sampleError.textContent = "Duplicate sample number in current batch.";
+            return;
+        }
+
+        const form = new FormData();
+        form.append("date", dateInput.value);
+        form.append("shift", shiftInput.value);
+        form.append("sample_code", sample);
+        form.append("csrfmiddlewaretoken", csrf());
+
+        const res = await fetch("/api/validate-sample/", {
+            method: "POST",
+            body: form
+        });
+        const result = await res.json();
+
+        if (!result.valid) {
+            sampleError.textContent = result.message || "Invalid sample.";
+            return;
+        }
+
+        document.getElementById("emptyRow")?.remove();
+
+        const tr = document.createElement("tr");
+        tr.dataset.sample = sample;
+        tr.innerHTML = `
+            <td class="serial"></td>
+            <td>${sample}<input type="hidden" name="sample_code[]" value="${sample}"></td>
+            <td>${Number(fat).toFixed(2)}<input type="hidden" name="fat[]" value="${Number(fat).toFixed(2)}"></td>
+            <td>${Number(snf).toFixed(2)}<input type="hidden" name="snf[]" value="${Number(snf).toFixed(2)}"></td>
+            <td>${Number(clr).toFixed(2)}<input type="hidden" name="clr[]" value="${Number(clr).toFixed(2)}"></td>
+            <td><button type="button" class="delete">Delete</button></td>
+        `;
+        tr.querySelector(".delete").addEventListener("click", () => {
+            tr.remove();
+            renumber();
+        });
+        batchBody.appendChild(tr);
+        sampleInput.value = "";
+        clearValues();
+        renumber();
+        sampleInput.focus();
+    });
+
+    function renumber() {
+        const rows = [...batchBody.querySelectorAll("tr[data-sample]")];
+        rows.forEach((row, index) => row.querySelector(".serial").textContent = index + 1);
+        rowCount.textContent = rows.length;
+        if (!rows.length) {
+            batchBody.innerHTML = `<tr id="emptyRow"><td colspan="6" class="empty">No samples added yet.</td></tr>`;
+        }
+    }
+
+    document.getElementById("qcForm").addEventListener("submit", e => {
+        if (!batchBody.querySelector("tr[data-sample]")) {
+            e.preventDefault();
+            alert("Add at least one sample to the batch.");
+        }
+    });
+})();
+</script>
+{% endblock %}

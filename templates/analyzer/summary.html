@@ -1,0 +1,38 @@
+{% extends "analyzer/base.html" %}
+{% block title %}Summary · Milk Analyzer Automation{% endblock %}
+{% block content %}
+<section class="hero compact">
+    <div>
+        <span class="eyebrow">QC ANALYTICS</span>
+        <h1>Quality Summary</h1>
+        <p>Review sample count and average FAT, SNF and CLR by date and shift.</p>
+    </div>
+</section>
+
+<section class="card">
+<form method="get">
+    <div class="grid three">
+        <label><span>Date</span><input type="date" name="date" value="{{ date_value }}"></label>
+        <label><span>Shift</span>
+            <select name="shift">
+                <option value="ALL" {% if shift == "ALL" %}selected{% endif %}>All</option>
+                <option value="AM" {% if shift == "AM" %}selected{% endif %}>AM</option>
+                <option value="PM" {% if shift == "PM" %}selected{% endif %}>PM</option>
+            </select>
+        </label>
+        <div class="filter-button"><button class="button primary" type="submit">View Summary</button></div>
+    </div>
+</form>
+</section>
+
+{% if searched %}
+<section class="card">
+    <div class="metrics">
+        <div class="metric"><span>Total Samples</span><strong>{{ total }}</strong></div>
+        <div class="metric"><span>Average FAT</span><strong>{{ avg_fat }}</strong></div>
+        <div class="metric"><span>Average SNF</span><strong>{{ avg_snf }}</strong></div>
+        <div class="metric"><span>Average CLR</span><strong>{{ avg_clr }}</strong></div>
+    </div>
+</section>
+{% endif %}
+{% endblock %}

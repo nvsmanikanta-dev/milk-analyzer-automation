@@ -1,0 +1,130 @@
+{% extends "analyzer/base.html" %}
+{% block title %}Server Sync · Milk Analyzer Automation{% endblock %}
+
+{% block content %}
+<section class="hero compact">
+    <div>
+        <span class="eyebrow">LOCAL → SERVER</span>
+        <h1>Analyzer Server Connectivity</h1>
+        <p>Fetch locally saved QC samples by date and shift, verify server availability, then synchronize them to the server database.</p>
+    </div>
+    {% if server_ok %}
+        <span class="mode server-up">SERVER UP</span>
+    {% else %}
+        <span class="mode server-down">SERVER DOWN</span>
+    {% endif %}
+</section>
+
+<section class="card">
+    <form method="post">
+        {% csrf_token %}
+        <div class="grid three">
+            <label>
+                <span>Date</span>
+                <input type="date" name="date" value="{{ date_value }}" required>
+            </label>
+
+            <label>
+                <span>Shift</span>
+                <select name="shift">
+                    <option value="AM" {% if shift == "AM" %}selected{% endif %}>AM</option>
+                    <option value="PM" {% if shift == "PM" %}selected{% endif %}>PM</option>
+                </select>
+            </label>
+
+            <div class="filter-button">
+                <button class="button secondary" type="submit" name="action" value="fetch">
+                    Fetch Local QC
+                </button>
+            </div>
+        </div>
+    </form>
+
+    <div class="metrics sync-metrics">
+        <div class="metric">
+            <span>Server Status</span>
+            {% if server_ok %}
+                <strong class="good">Connected</strong>
+            {% else %}
+                <strong class="bad">Unavailable</strong>
+            {% endif %}
+        </div>
+        <div class="metric">
+            <span>Pending Local</span>
+            <strong>{{ local_pending }}</strong>
+        </div>
+        <div class="metric">
+            <span>Server Rows</span>
+            <strong>{{ server_count }}</strong>
+        </div>
+        <div class="metric">
+            <span>Selected Shift</span>
+            <strong>{{ shift }}</strong>
+        </div>
+    </div>
+
+    {% if server_error %}
+        <p class="note bad-note">Server connection detail: {{ server_error }}</p>
+    {% endif %}
+</section>
+
+<section class="card">
+    <div class="split">
+        <div>
+            <h2>Local Analyzer Records</h2>
+            <p class="muted">Rows are ordered by sample number. Only selected date/shift data will be pushed.</p>
+        </div>
+        <span class="count">{{ analyzer_rows|length }} rows</span>
+    </div>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>S.No</th>
+                    <th>Sample</th>
+                    <th>FAT</th>
+                    <th>SNF</th>
+                    <th>CLR</th>
+                    <th>Analyzer</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in analyzer_rows %}
+                <tr>
+                    <td>{{ forloop.counter }}</td>
+                    <td>{{ row.sample_code }}</td>
+                    <td>{{ row.fat }}</td>
+                    <td>{{ row.snf }}</td>
+                    <td>{{ row.clr }}</td>
+                    <td>{{ row.analyzer_code }}</td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="6" class="empty">No local QC rows for this date and shift.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <form method="post" class="buttons end">
+        {% csrf_token %}
+        <input type="hidden" name="date" value="{{ date_value }}">
+        <input type="hidden" name="shift" value="{{ shift }}">
+        <button
+            class="button primary"
+            type="submit"
+            name="action"
+            value="apply_to_server"
+            {% if not server_ok or not analyzer_rows %}disabled{% endif %}
+        >
+            Apply to Server
+        </button>
+    </form>
+
+    <p class="note">
+        After successful server persistence, only the synchronized local rows are removed from the pending queue.
+    </p>
+</section>
+{% endblock %}
